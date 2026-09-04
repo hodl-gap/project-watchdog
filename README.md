@@ -6,7 +6,7 @@ A private Telegram bot that watches selected GitHub repositories, sends one dail
 
 - `/add owner/repo 7 | next action` registers an existing repository.
 - `/new repo-name | description` creates a private repository and registers it.
-- `/report` runs today's report manually.
+- `/report` rescans GitHub and replaces today's cached report.
 - Daily reports show every active repository and its latest commit age in hours.
 - A repository with no commits is stale immediately, regardless of its creation time.
 - Each repository shows linked ticket IDs under `Next` and a truncated latest commit subject under `Last`.

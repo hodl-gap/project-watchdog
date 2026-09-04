@@ -5,6 +5,7 @@ import logging
 import re
 
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .config import Config
@@ -114,11 +115,26 @@ class BotApp:
             return
         local_today = datetime.now(self.config.timezone).date()
         existing = self.store.report_for_date(local_today)
+        try:
+            stale, healthy = self.watchdog.scan(local_today)
+        except GitHubError as error:
+            await update.message.reply_text(f"⚠️ Project scan failed: {error}")
+            return
+
         if existing:
-            text, markup = self.watchdog.render(existing["id"], local_today.isoformat())
-            await update.message.reply_text(self.with_header(text), reply_markup=markup)
+            report_id = existing["id"]
+            self.store.replace_report_items(report_id, stale + healthy)
+            if existing["message_id"]:
+                try:
+                    await context.bot.delete_message(self.config.chat_id, existing["message_id"])
+                except TelegramError:
+                    pass
         else:
-            await self.send_report(context)
+            report_id = self.store.create_report(local_today, stale + healthy)
+
+        text, markup = self.watchdog.render(report_id, local_today.isoformat())
+        message = await update.message.reply_text(self.with_header(text), reply_markup=markup)
+        self.store.set_message_id(report_id, message.message_id)
 
     async def reminder(self, context: ContextTypes.DEFAULT_TYPE) -> None:
         report = self.store.latest_unacknowledged()

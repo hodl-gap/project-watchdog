@@ -118,6 +118,30 @@ class Store:
             )
             return report_id
 
+    def replace_report_items(self, report_id: int, items: list[dict]) -> None:
+        """Replace a report snapshot after an explicit manual refresh."""
+        with self.connection() as conn:
+            conn.execute("DELETE FROM report_items WHERE report_id=?", (report_id,))
+            conn.executemany(
+                """INSERT INTO report_items(
+                       report_id, project_id, days_idle, hours_idle, last_push,
+                       last_commit_message, needs_decision
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        report_id,
+                        item["project_id"],
+                        item["days_idle"],
+                        item["hours_idle"],
+                        item["last_push"],
+                        item.get("last_commit_message"),
+                        int(item["needs_decision"]),
+                    )
+                    for item in items
+                ],
+            )
+            conn.execute("UPDATE reports SET acknowledged_at=NULL WHERE id=?", (report_id,))
+
     def report_for_date(self, report_date: date):
         with self.connection() as conn:
             return conn.execute("SELECT * FROM reports WHERE report_date=?", (report_date.isoformat(),)).fetchone()

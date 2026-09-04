@@ -49,6 +49,21 @@ class CoreFlowTest(unittest.TestCase):
             store.decide(report_id, ids["owner/stale"], "today", date.today())
             self.assertTrue(store.acknowledge(report_id))
 
+            replacement = [
+                {
+                    "project_id": ids["owner/healthy"],
+                    "days_idle": 0,
+                    "hours_idle": 2,
+                    "last_push": "2026-09-03T00:00:00+00:00",
+                    "last_commit_message": "A newer commit",
+                    "needs_decision": False,
+                }
+            ]
+            store.replace_report_items(report_id, replacement)
+            refreshed = store.report_items(report_id)
+            self.assertEqual(len(refreshed), 1)
+            self.assertEqual(refreshed[0]["repo"], "owner/healthy")
+
 
 if __name__ == "__main__":
     unittest.main()
