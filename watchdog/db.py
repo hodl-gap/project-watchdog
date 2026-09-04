@@ -41,7 +41,14 @@ CREATE TABLE IF NOT EXISTS pending_tasks (
     title TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     linked_repo TEXT,
+    snoozed_until TEXT,
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS report_pending_items (
+    report_id INTEGER NOT NULL REFERENCES reports(id),
+    pending_task_id INTEGER NOT NULL REFERENCES pending_tasks(id),
+    decision TEXT,
+    PRIMARY KEY (report_id, pending_task_id)
 );
 """
 
@@ -59,6 +66,9 @@ class Store:
                 conn.execute("ALTER TABLE report_items ADD COLUMN last_commit_message TEXT")
             if "hours_idle" not in columns:
                 conn.execute("ALTER TABLE report_items ADD COLUMN hours_idle INTEGER NOT NULL DEFAULT 0")
+            pending_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)")}
+            if "snoozed_until" not in pending_columns:
+                conn.execute("ALTER TABLE pending_tasks ADD COLUMN snoozed_until TEXT")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -117,6 +127,18 @@ class Store:
                 "SELECT * FROM pending_tasks WHERE upper(code)=upper(?)", (code,)
             ).fetchone()
 
+    def active_pending_tasks(self, today: date) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return list(
+                conn.execute(
+                    """SELECT * FROM pending_tasks
+                       WHERE state='pending'
+                         AND (snoozed_until IS NULL OR snoozed_until <= ?)
+                       ORDER BY id""",
+                    (today.isoformat(),),
+                )
+            )
+
     def mark_pending_linked(self, code: str, repo: str) -> None:
         with self.connection() as conn:
             cursor = conn.execute(
@@ -164,12 +186,14 @@ class Store:
                     for item in items
                 ],
             )
+            self._insert_pending_report_items(conn, int(cursor.lastrowid), report_date)
             return report_id
 
     def replace_report_items(self, report_id: int, items: list[dict]) -> None:
         """Replace a report snapshot after an explicit manual refresh."""
         with self.connection() as conn:
             conn.execute("DELETE FROM report_items WHERE report_id=?", (report_id,))
+            conn.execute("DELETE FROM report_pending_items WHERE report_id=?", (report_id,))
             conn.executemany(
                 """INSERT INTO report_items(
                        report_id, project_id, days_idle, hours_idle, last_push,
@@ -188,7 +212,23 @@ class Store:
                     for item in items
                 ],
             )
+            report_date = date.fromisoformat(
+                conn.execute("SELECT report_date FROM reports WHERE id=?", (report_id,)).fetchone()[0]
+            )
+            self._insert_pending_report_items(conn, report_id, report_date)
             conn.execute("UPDATE reports SET acknowledged_at=NULL WHERE id=?", (report_id,))
+
+    @staticmethod
+    def _insert_pending_report_items(
+        conn: sqlite3.Connection, report_id: int, report_date: date
+    ) -> None:
+        conn.execute(
+            """INSERT INTO report_pending_items(report_id, pending_task_id)
+               SELECT ?, id FROM pending_tasks
+               WHERE state='pending'
+                 AND (snoozed_until IS NULL OR snoozed_until <= ?)""",
+            (report_id, report_date.isoformat()),
+        )
 
     def report_for_date(self, report_date: date):
         with self.connection() as conn:
@@ -209,6 +249,18 @@ class Store:
                 )
             )
 
+    def report_pending_items(self, report_id: int) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return list(
+                conn.execute(
+                    """SELECT i.*, t.code, t.title
+                       FROM report_pending_items i
+                       JOIN pending_tasks t ON t.id=i.pending_task_id
+                       WHERE i.report_id=? ORDER BY t.id""",
+                    (report_id,),
+                )
+            )
+
     def decide(self, report_id: int, project_id: int, decision: str, today: date | None = None) -> None:
         with self.connection() as conn:
             conn.execute(
@@ -224,6 +276,22 @@ class Store:
             elif decision in {"paused", "archived"}:
                 conn.execute("UPDATE projects SET state=? WHERE id=?", (decision, project_id))
 
+    def decide_pending(
+        self, report_id: int, pending_task_id: int, decision: str, today: date | None = None
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """UPDATE report_pending_items SET decision=?
+                   WHERE report_id=? AND pending_task_id=?""",
+                (decision, report_id, pending_task_id),
+            )
+            if decision == "snooze3":
+                reference_date = today or date.today()
+                conn.execute(
+                    "UPDATE pending_tasks SET snoozed_until=? WHERE id=?",
+                    ((reference_date + timedelta(days=3)).isoformat(), pending_task_id),
+                )
+
     def acknowledge(self, report_id: int) -> bool:
         with self.connection() as conn:
             unresolved = conn.execute(
@@ -231,7 +299,12 @@ class Store:
                    WHERE report_id=? AND needs_decision=1 AND decision IS NULL""",
                 (report_id,),
             ).fetchone()[0]
-            if unresolved:
+            unresolved_pending = conn.execute(
+                """SELECT COUNT(*) FROM report_pending_items
+                   WHERE report_id=? AND decision IS NULL""",
+                (report_id,),
+            ).fetchone()[0]
+            if unresolved or unresolved_pending:
                 return False
             conn.execute(
                 "UPDATE reports SET acknowledged_at=? WHERE id=?",

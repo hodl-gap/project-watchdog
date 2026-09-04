@@ -55,14 +55,15 @@ class Watchdog:
 
     def render(self, report_id: int, report_date: str) -> tuple[str, InlineKeyboardMarkup]:
         items = self.store.report_items(report_id)
+        pending = self.store.report_pending_items(report_id)
         stale = [item for item in items if item["needs_decision"]]
         healthy = [item for item in items if not item["needs_decision"]]
         lines = [f"Project check-in · {report_date}", ""]
         buttons = []
-        if not stale:
+        if not stale and not pending:
             lines.append("✅ No projects need a decision today.")
         else:
-            lines.append(f"{len(stale)} project(s) need a decision:")
+            lines.append(f"{len(stale) + len(pending)} item(s) need a decision:")
             for number, item in enumerate(stale, start=1):
                 mark = "✅" if item["decision"] else "🔴"
                 lines.extend([
@@ -74,6 +75,20 @@ class Watchdog:
                 ])
                 if not item["decision"]:
                     prefix = f"d:{report_id}:{item['project_id']}:"
+                    buttons.append([
+                        InlineKeyboardButton(f"Work today (#{number})", callback_data=prefix + "today"),
+                        InlineKeyboardButton(f"Snooze 3d (#{number})", callback_data=prefix + "snooze3"),
+                    ])
+            for number, item in enumerate(pending, start=len(stale) + 1):
+                mark = "✅" if item["decision"] else "🔴"
+                lines.extend([
+                    "",
+                    f"#{number} {mark} {item['code']} — {item['title']}",
+                    "Repo: not attached",
+                    f"Decision: {item['decision'] or 'pending'}",
+                ])
+                if not item["decision"]:
+                    prefix = f"p:{report_id}:{item['pending_task_id']}:"
                     buttons.append([
                         InlineKeyboardButton(f"Work today (#{number})", callback_data=prefix + "today"),
                         InlineKeyboardButton(f"Snooze 3d (#{number})", callback_data=prefix + "snooze3"),

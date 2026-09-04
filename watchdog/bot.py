@@ -206,6 +206,16 @@ class BotApp:
             report_date = self._report_date(int(report_id))
             text, markup = self.watchdog.render(int(report_id), report_date)
             await query.edit_message_text(self.with_header(text), reply_markup=markup)
+        elif data.startswith("p:"):
+            _, report_id, pending_task_id, decision = data.split(":", 3)
+            local_today = datetime.now(self.config.timezone).date()
+            self.store.decide_pending(
+                int(report_id), int(pending_task_id), decision, local_today
+            )
+            await query.answer()
+            report_date = self._report_date(int(report_id))
+            text, markup = self.watchdog.render(int(report_id), report_date)
+            await query.edit_message_text(self.with_header(text), reply_markup=markup)
         elif data.startswith("ack:"):
             report_id = int(data.split(":", 1)[1])
             if not self.store.acknowledge(report_id):

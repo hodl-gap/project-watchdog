@@ -21,6 +21,22 @@ class CoreFlowTest(unittest.TestCase):
             self.assertEqual(store.pending_tasks(), [])
             self.assertEqual(store.projects()[0]["next_action"], "P-0001")
 
+    def test_pending_task_appears_in_report_and_requires_decision(self):
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3") as database:
+            store = Store(database.name)
+            store.add_pending_task("AI wiki expansion")
+            pending_id = store.pending_tasks()[0]["id"]
+            report_id = store.create_report(date.today(), [])
+
+            text, markup = Watchdog(store, None).render(report_id, date.today().isoformat())
+            self.assertIn("P-0001 — AI wiki expansion", text)
+            self.assertIn("Repo: not attached", text)
+            self.assertEqual(markup.inline_keyboard[0][0].text, "Work today (#1)")
+            self.assertFalse(store.acknowledge(report_id))
+
+            store.decide_pending(report_id, pending_id, "today", date.today())
+            self.assertTrue(store.acknowledge(report_id))
+
     def test_report_requires_stale_decisions_but_not_healthy_decisions(self):
         with tempfile.NamedTemporaryFile(suffix=".sqlite3") as database:
             store = Store(database.name)
