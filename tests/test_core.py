@@ -7,6 +7,20 @@ from watchdog.service import Watchdog
 
 
 class CoreFlowTest(unittest.TestCase):
+    def test_pending_task_can_be_registered_then_linked(self):
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3") as database:
+            store = Store(database.name)
+            first = store.add_pending_task("AI wiki expansion")
+            duplicate = store.add_pending_task("AI wiki expansion")
+            self.assertEqual(first, "P-0001")
+            self.assertEqual(duplicate, first)
+            self.assertEqual(len(store.pending_tasks()), 1)
+
+            store.add_project("owner/ai-wiki", 1, first)
+            store.mark_pending_linked(first, "owner/ai-wiki")
+            self.assertEqual(store.pending_tasks(), [])
+            self.assertEqual(store.projects()[0]["next_action"], "P-0001")
+
     def test_report_requires_stale_decisions_but_not_healthy_decisions(self):
         with tempfile.NamedTemporaryFile(suffix=".sqlite3") as database:
             store = Store(database.name)

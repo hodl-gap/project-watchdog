@@ -44,6 +44,8 @@ class BotApp:
             "Project Watchdog is running.\n\n"
             "/add owner/repo [stale-days] [| next action]\n"
             "/new repo-name [| description]\n"
+            "/task title\n"
+            "/attach P-0001 owner/repo [stale-days]\n"
             "/list\n/report"
         )
 
@@ -83,13 +85,60 @@ class BotApp:
         except GitHubError as error:
             await update.message.reply_text(f"Could not create repository: {error}")
 
+    async def task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.authorized(update):
+            return
+        title = " ".join(context.args).strip()
+        if not title:
+            await update.message.reply_text("Usage: /task title")
+            return
+        code = self.store.add_pending_task(title)
+        await update.message.reply_text(
+            f"Added {code}: {title}\nNo commit alarm will run until a repository is attached."
+        )
+
+    async def attach(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.authorized(update):
+            return
+        if len(context.args) < 2 or "/" not in context.args[1]:
+            await update.message.reply_text(
+                "Usage: /attach P-0001 owner/repo [stale-days]"
+            )
+            return
+        code = context.args[0].upper()
+        repo = context.args[1]
+        try:
+            stale_days = int(context.args[2]) if len(context.args) > 2 else self.config.default_stale_days
+            if stale_days < 1:
+                raise ValueError("stale-days must be positive")
+            task = self.store.pending_task(code)
+            if not task or task["state"] != "pending":
+                raise ValueError(f"{code} is not an unlinked pending task")
+            self.github.repository(repo)
+            self.store.add_project(repo, stale_days, code)
+            self.store.mark_pending_linked(code, repo)
+            await update.message.reply_text(
+                f"Attached {code} to {repo}; alarm after {stale_days} idle days."
+            )
+        except (GitHubError, ValueError) as error:
+            await update.message.reply_text(f"Could not attach task: {error}")
+
     async def list_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.authorized(update):
             return
         rows = self.store.projects()
-        text = "No projects registered." if not rows else "\n".join(
-            f"• {row['repo']} — {row['state']}, {row['stale_after_days']}d" for row in rows
-        )
+        pending = self.store.pending_tasks()
+        sections = []
+        if rows:
+            sections.append("Projects:\n" + "\n".join(
+                f"• {row['repo']} — {row['state']}, {row['stale_after_days']}d"
+                for row in rows
+            ))
+        if pending:
+            sections.append("Pending repository:\n" + "\n".join(
+                f"• {row['code']} — {row['title']}" for row in pending
+            ))
+        text = "\n\n".join(sections) if sections else "No projects or pending tasks registered."
         await update.message.reply_text(text)
 
     async def send_report(self, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -177,6 +226,8 @@ class BotApp:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("add", self.add))
         application.add_handler(CommandHandler("new", self.new))
+        application.add_handler(CommandHandler("task", self.task))
+        application.add_handler(CommandHandler("attach", self.attach))
         application.add_handler(CommandHandler("list", self.list_projects))
         application.add_handler(CommandHandler("report", self.report_command))
         application.add_handler(CallbackQueryHandler(self.callback))

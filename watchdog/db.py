@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS report_items (
     decision TEXT,
     PRIMARY KEY (report_id, project_id)
 );
+CREATE TABLE IF NOT EXISTS pending_tasks (
+    id INTEGER PRIMARY KEY,
+    code TEXT UNIQUE,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    linked_repo TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -78,6 +86,46 @@ class Store:
     def projects(self) -> list[sqlite3.Row]:
         with self.connection() as conn:
             return list(conn.execute("SELECT * FROM projects ORDER BY repo"))
+
+    def add_pending_task(self, title: str) -> str:
+        with self.connection() as conn:
+            existing = conn.execute(
+                "SELECT code FROM pending_tasks WHERE lower(title)=lower(?) AND state='pending'",
+                (title,),
+            ).fetchone()
+            if existing:
+                return existing["code"]
+            cursor = conn.execute(
+                "INSERT INTO pending_tasks(title, created_at) VALUES (?, ?)",
+                (title, datetime.now().isoformat()),
+            )
+            code = f"P-{int(cursor.lastrowid):04d}"
+            conn.execute("UPDATE pending_tasks SET code=? WHERE id=?", (code, cursor.lastrowid))
+            return code
+
+    def pending_tasks(self) -> list[sqlite3.Row]:
+        with self.connection() as conn:
+            return list(
+                conn.execute(
+                    "SELECT * FROM pending_tasks WHERE state='pending' ORDER BY id"
+                )
+            )
+
+    def pending_task(self, code: str):
+        with self.connection() as conn:
+            return conn.execute(
+                "SELECT * FROM pending_tasks WHERE upper(code)=upper(?)", (code,)
+            ).fetchone()
+
+    def mark_pending_linked(self, code: str, repo: str) -> None:
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """UPDATE pending_tasks SET state='linked', linked_repo=?
+                   WHERE upper(code)=upper(?) AND state='pending'""",
+                (repo, code),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Pending task {code} was not found or is already linked")
 
     def active_projects(self, today: date) -> list[sqlite3.Row]:
         with self.connection() as conn:
